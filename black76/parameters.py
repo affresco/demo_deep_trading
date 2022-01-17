@@ -3,6 +3,7 @@
 # PARAMETERS
 # ####################################################################
 
+# Floor on the volatility level
 EPSILON_IV = 0.01
 
 DAYS_PER_YEAR = 365.2422

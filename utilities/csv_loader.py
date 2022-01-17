@@ -157,8 +157,8 @@ def reindex_dataframe(df: pd.DataFrame, resample: bool = True):
     Re-index the dataframe
 
     :param df: pandas dataframe
-    :param resample: Bool, too make sure the interval is OK.
-    :return:
+    :param resample: Bool, to make sure the interval is OK.
+    :return: pandas DataFrame
     """
 
     logging.debug(f"Creating index.")

@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 
 import ptan
 import ptan.ignite as ptan_ignite
+
 from ignite.engine import Engine
 from ignite.metrics import RunningAverage
 from ignite.contrib.handlers import tensorboard_logger as tb_logger
@@ -16,6 +17,14 @@ from ignite.contrib.handlers import tensorboard_logger as tb_logger
 
 @torch.no_grad()
 def calc_values_of_states(states, net, device="cpu"):
+    """
+    Compute the average value of the states during training.
+
+    :param states:
+    :param net: pyTorch neural network
+    :param device: cuda or cpu, as string
+    :return: mean value as float
+    """
     mean_vals = []
     for batch in np.array_split(states, 64):
         states_v = torch.tensor(batch).to(device)
@@ -23,22 +32,6 @@ def calc_values_of_states(states, net, device="cpu"):
         best_action_values_v = action_values_v.max(1)[0]
         mean_vals.append(best_action_values_v.mean().item())
     return np.mean(mean_vals)
-
-
-def unpack_batch(batch):
-    states, actions, rewards, dones, last_states = [], [], [], [], []
-    for exp in batch:
-        state = np.array(exp.state, copy=False)
-        states.append(state)
-        actions.append(exp.action)
-        rewards.append(exp.reward)
-        dones.append(exp.last_state is None)
-        if exp.last_state is None:
-            last_states.append(state)       # the result will be masked anyway
-        else:
-            last_states.append(np.array(exp.last_state, copy=False))
-    return np.array(states, copy=False), np.array(actions), np.array(rewards, dtype=np.float32), \
-           np.array(dones, dtype=np.uint8), np.array(last_states, copy=False)
 
 
 def calc_loss(batch, net, tgt_net, gamma, device="cpu"):
@@ -61,15 +54,54 @@ def calc_loss(batch, net, tgt_net, gamma, device="cpu"):
 
 def batch_generator(buffer: ptan.experience.ExperienceReplayBuffer,
                     initial: int, batch_size: int):
+    """
+    Generator for batched selected from replay buffer.
+
+    :param buffer: Replay buffer
+    :param initial: Initial sample size
+    :param batch_size: Target batch size
+    :return:
+    """
     buffer.populate(initial)
     while True:
         buffer.populate(1)
         yield buffer.sample(batch_size)
 
 
+def unpack_batch(batch):
+    """
+    Array manipulations...
+    :param batch:
+    :return:
+    """
+    states, actions, rewards, dones, last_states = [], [], [], [], []
+    for exp in batch:
+        state = np.array(exp.state, copy=False)
+        states.append(state)
+        actions.append(exp.action)
+        rewards.append(exp.reward)
+        dones.append(exp.last_state is None)
+        if exp.last_state is None:
+            last_states.append(state)  # the result will be masked anyway
+        else:
+            last_states.append(np.array(exp.last_state, copy=False))
+    return np.array(states, copy=False), np.array(actions), np.array(rewards, dtype=np.float32), \
+           np.array(dones, dtype=np.uint8), np.array(last_states, copy=False)
+
+
 def setup_ignite(engine: Engine, exp_source, run_name: str,
                  extra_metrics: Iterable[str] = ()):
-    # get rid of missing metrics warning
+    """
+    Entry point to set up the 'ignite' package correctly.
+
+    :param engine: an Ignite Engine
+    :param exp_source: Experience source
+    :param run_name: name for saving this run
+    :param extra_metrics: some other metrics to be computed
+    :return: TensorBoard logger
+    """
+    #
+    # Get rid of missing metrics warning
     warnings.simplefilter("ignore", category=UserWarning)
 
     handler = ptan_ignite.EndOfEpisodeHandler(exp_source, subsample_end_of_episode=100)
@@ -81,11 +113,11 @@ def setup_ignite(engine: Engine, exp_source, run_name: str,
         passed = trainer.state.metrics.get('time_passed', 0)
         print("Episode %d: reward=%.0f, steps=%s, "
               "speed=%.1f f/s, elapsed=%s" % (
-            trainer.state.episode,
-            trainer.state.episode_reward,
-            trainer.state.episode_steps,
-            trainer.state.metrics.get('avg_fps', 0),
-            timedelta(seconds=int(passed))))
+                  trainer.state.episode,
+                  trainer.state.episode_reward,
+                  trainer.state.episode_steps,
+                  trainer.state.metrics.get('avg_fps', 0),
+                  timedelta(seconds=int(passed))))
 
     now = datetime.now().isoformat(timespec='minutes')
     logdir = f"runs/{now}-{run_name}"

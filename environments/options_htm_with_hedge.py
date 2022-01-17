@@ -1,4 +1,5 @@
 import random
+import logging
 from typing import Dict, Optional, List
 
 import gym
@@ -34,6 +35,11 @@ RISK_AVERSION = 10.0
 # ###################################################################
 
 class OptionsHoldToMaturityEnv(gym.Env):
+    """
+    Class representing the Environment for an option position
+    held to maturity (HTM) where the delta exposure of the option
+    can be hedged by the RL agent.
+    """
     #
     #
     #
@@ -52,7 +58,7 @@ class OptionsHoldToMaturityEnv(gym.Env):
 
     def __init__(self,
 
-                 # A currency to play with
+                 # A currency default
                  currency: str = "BTC",
 
                  # Some parameters...
@@ -62,6 +68,8 @@ class OptionsHoldToMaturityEnv(gym.Env):
                  start_duration: int = 120,
                  target_duration: int = 1440,
                  reach_duration_after: int = 10000,
+
+                 risk_aversion: float = 1.0,
 
                  name: str = "Options-HTM-Env-v01"):
 
@@ -108,6 +116,10 @@ class OptionsHoldToMaturityEnv(gym.Env):
         # Conv 1D window size
         self.__window_size = conv_window_size
 
+        # Risk aversion factor to penalize
+        # the AI's drift from the BSM delta
+        self.__risk_aversion: float = float(risk_aversion)
+
         self.seed()
         self.log(f"Initialization completed.")
 
@@ -136,7 +148,7 @@ class OptionsHoldToMaturityEnv(gym.Env):
     # ##################################
 
     def log(self, message: str):
-        print(f"[ENV:{self.name}] {message}", flush=True)
+        logging.info(f"[ENV:{self.name}] {message}")
 
     # ##################################
     # DATA LOADING
@@ -159,16 +171,33 @@ class OptionsHoldToMaturityEnv(gym.Env):
     # ##################################
 
     def get_random_offset(self):
-        ttm = self.__current_duration
-        offset = self.np_random.randint(self._state.window_size + 1, self.__sample_size - ttm)
+        """
+        Select a random offset in the dataset (i.e. a time) to start the experiment.
+        :return: Offset as int
+        """
+        offset = self.np_random.randint(self._state.window_size + 1, self.__sample_size - self.__current_duration)
         return offset
 
     @classmethod
     def get_option_type(cls):
+        """
+        Select a put or a call randomly, returns their int equivalent (Put: -1, Call: +1)
+        :return: Element from {-1, +1}
+        """
         # Select an option type (put: -1, call +1)
         return random.choice([-1, 1])
 
     def get_option_duration(self, min_duration: int = 360, max_duration: int = 1440):
+        """
+        Select randomly an option duration in minutes. The option duration will be selected
+        in the interval min_duration to max_duration.
+
+        :param min_duration: Minimum duration in minutes (as int)
+        :param max_duration: Maximum duration in minutes (as int)
+        :return: Duration as int
+        """
+
+        # Avoids numerical issues
         if min_duration == max_duration:
             return min_duration
 
@@ -179,29 +208,40 @@ class OptionsHoldToMaturityEnv(gym.Env):
 
     @classmethod
     def get_option_notional(cls):
+        """
+        Provides a notional value, for the time being just long (+1) or short (-1).
+        :return: Element from {-1, +1}
+        """
         return random.choice([-1, 1])
 
-    def __old__get_option_strike_moneyness(self, option_type: int, itm_k: float = 0.01, otm_k: float = 0.05):
-        moneyness = self.np_random.uniform(-itm_k, otm_k)  # always close to OTM
-        return 1.0 + (moneyness * option_type)
-
-    def get_option_strike_moneyness(self, option_type: int, otm: float = 0.0, scale: float = 0.025):
+    @classmethod
+    def get_option_strike_moneyness(cls, option_type: int, otm: float = 0.0, scale: float = 0.025):
         loc = otm * option_type
-        return 1.0 + numpy.random.normal(loc=loc,
-                                         scale=scale)
+        return 1.0 + numpy.random.normal(loc=loc, scale=scale)
 
-    def get_risk_aversion(self):
-        floor = 1.0
-        ra = floor + (RISK_AVERSION - floor) / (1.0 + self.episodes / self.__reach_duration_after)
-        return ra
+    def get_risk_aversion(self, risk_aversion: float, floor_risk: float = 1.0):
+        """
+        Provides a numerical value for the risk aversion parameter, which can be
+        lowered with the number of episodes to enforce a different behaviour.
+
+        :param risk_aversion: Float
+        :param floor_risk: Float
+        :return:
+        """
+        if risk_aversion <= floor_risk:
+            return floor_risk
+        return floor_risk + (risk_aversion - floor_risk) / (1.0 + self.episodes / self.__reach_duration_after)
 
     # ##################################
     # INTERFACE: RESET
     # ##################################
 
     def reset(self):
+        """
+        Reset the episode. Required by the OpenAI Gym framework.
 
-        st = time.time()
+        :return: Initial state of the world
+        """
 
         # Add to episode counter
         self.episodes += 1
@@ -224,7 +264,7 @@ class OptionsHoldToMaturityEnv(gym.Env):
         duration = self.get_option_duration(min_duration=self.__initial_duration,
                                             max_duration=self.__target_duration)
 
-        risk_aversion = 1.0  #self.get_risk_aversion()
+        risk_aversion = self.get_risk_aversion(self.__risk_aversion)
 
         self._state.reset(
             offset=offset,
@@ -236,11 +276,8 @@ class OptionsHoldToMaturityEnv(gym.Env):
             risk_aversion=risk_aversion,
         )
 
-        just_now = time.time()
-
-        print(
-            f"Reset took: {1000.0 * (just_now - st)} ms, last reset occurred {1000.0 * (st - self.last_reset)} ms ago.")
-        self.last_reset = st
+        # Take a note
+        self.last_reset = time.time()
 
         if self.episodes % 100 == 0:
             self.log(f"Resetting at episode number {self.episodes}.")
@@ -276,8 +313,3 @@ class OptionsHoldToMaturityEnv(gym.Env):
         self.np_random, seed1 = seeding.np_random(seed)
         seed2 = seeding.hash_seed(seed1 + 1) % 2 ** 31
         return [seed1, seed2]
-
-
-if __name__ == '__main__':
-    # Data is loaded by the environment itself from the ../data/ folder
-    env = OptionsHoldToMaturityEnv(currency="BTC", name="A3C-Train")

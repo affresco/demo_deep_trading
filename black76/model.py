@@ -83,17 +83,15 @@ def vega_and_gamma(forward: np.ndarray, strike: np.ndarray, volatility: np.ndarr
 # NOT COMPUTED FOR NOW
 # ####################################################################
 
-def rho(option_sign, forward: np.ndarray, strike: np.ndarray, volatility, ttm, d2=None, cdf_d2=None, df_backward=1.0,
-        **kwargs):
+def rho(option_sign, forward: np.ndarray, strike: np.ndarray, volatility, ttm, d2=None, cdf_d2=None, df_backward=1.0):
     d2 = d2 or compute_d2(forward=forward, strike=strike, volatility=volatility, ttm=ttm)
     if cdf_d2 is None:
         cdf_d2 = scipy_stats.norm.cdf(option_sign * d2)
     return option_sign * strike * ttm * df_backward * cdf_d2
 
 
-def theta(option_sign, forward: np.ndarray, strike: np.ndarray, volatility, ttm,
-          d1=None, pdf_d1=None, cdf_d1=None, d2=None, pdf_d2=None, cdf_d2=None,
-          df_backward=1.0, df_div_repo=1.0, **kwargs):
+def theta(option_sign, forward: np.ndarray, strike: np.ndarray, volatility, ttm, d1=None, pdf_d1=None,
+          cdf_d1=None, d2=None, cdf_d2=None, df_backward=1.0, df_div_repo=1.0):
     int_rate = (-1. / ttm) * np.log(df_backward)
     div_repo_rate = (-1. / ttm) * np.log(df_div_repo)
 
