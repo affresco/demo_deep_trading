@@ -1,124 +1,184 @@
-import os
+import logging
 import datetime as dt
+
+# Scientific
 import numpy as np
 import pandas as pd
 
-import os
-from os import path
-import pathlib
-
-# ###################################################################
-# LOADING DATASETS FROM CSV FILES
-# ###################################################################
-
-# ##################################################################
-# BASE PATH
-# ##################################################################
-
-# This is just for reference: gets us to project-level
-PROJECT_DIR = pathlib.Path(__file__).parent.parent.resolve()
-
+# Local imports
+from utilities.paths import *
 
 # ##################################
-# PATHS
+# PARAMS
 # ##################################
 
-def get_data_file_path(currency: str):
-    f = get_data_folder_path()
-    return f"{f}{str(currency).upper()}.csv"
+# Maximum number of rows to be read by default
+MAX_ROWS: int = int(1e6)
 
-
-def get_data_folder_path():
-    return os.path.join(PROJECT_DIR, "data")
-    # return f"/home/affresco/code/affresco/deep_trading/data/"
+# Column suffix for candles: e.g. 'index_close'
+OHLC = ["open", "high", "low", "close"]
 
 
 # ##################################
 # TRAIN & TEST SETS
 # ##################################
 
-def load_test_set(currency: str, max_rows=int(1e12)):
-    p = os.path.join(get_data_folder_path(), f"{currency}_test.csv")
+def load_test_set(currency: str, max_rows=MAX_ROWS):
+    """
+    Load the test set for a given currency (3-letter) symbol.
+
+    :param currency: 3-letter string symbol (e.g. BTC)
+    :param max_rows: Maximum number of rows to be read (int)
+    :return: pandas DataFrame
+    """
+    logging.info(f"Loading test dataset in {currency} with a maximum of {max_rows} rows.")
+    p = os.path.join(get_data_folder_path(), f"{str(currency).upper()}_test.csv")
     return load_dataset(path=p, max_rows=max_rows)
 
 
-def load_train_set(currency: str, max_rows=int(1e12)):
-    p = os.path.join(get_data_folder_path(), f"{currency}_train.csv")
+def load_train_set(currency: str, max_rows=MAX_ROWS):
+    """
+    Load the train set for a given currency (3-letter) symbol.
+
+    :param currency: 3-letter string symbol (e.g. BTC)
+    :param max_rows: Maximum number of rows to be read (int)
+    :return: pandas DataFrame
+    """
+    logging.info(f"Loading training dataset in {currency} with a maximum of {max_rows} rows.")
+    p = os.path.join(get_data_folder_path(), f"{str(currency).upper()}_train.csv")
     return load_dataset(path=p, max_rows=max_rows)
 
 
 # ##################################
-# BASE LOADER USING PANDAS
+# BASIC LOADER USING PANDAS
 # ##################################
 
 def load_dataset(path: str, max_rows: int = None):
-    #
-    # Load
-    if max_rows is not None:
-        df = pd.read_csv(path, nrows=max_rows)
-    else:
-        df = pd.read_csv(path)
-    print(f"Spot dataset loaded with shape {df.shape}")
+    """
+    Load a dataset for a given currency (3-letter) symbol.
 
-    print(f"Creating index.")
-    df["timestamp"] /= 1e9
-    idx = pd.DatetimeIndex([dt.datetime.utcfromtimestamp(d) for d in df["timestamp"].to_numpy()])
-    df.set_index(idx, inplace=True)
+    :param path: Local dir with CSV file in (absolute).
+    :param max_rows: Maximum number of rows to be read (int, optional)
+    :return: pandas DataFrame
+    """
+    # Load the raw dataframe using pandas
+    df = load_raw_dataframe(max_rows, path)
 
-    df.drop(columns=["timestamp", ], inplace=True)
+    # Clean-up the index and resample
+    df = reindex_dataframe(df=df, resample=True)
 
-    # Setting the index
-    # df.set_index("timestamp", inplace=True)
-    print(f"Spot index set.")
+    logging.info("Dataset loaded.")
 
-    # Sorting the index in place
-    df.sort_index(inplace=True)
-    print(f"Spot index sorted.")
+    # Will fwd-fill spot price data (OHLC)
+    # then back-fill the first row
+    df = back_and_forward_fill_ohlc_index_columns(df.copy())
+    df = clean_iv_columns(df)
 
-    df.index.drop_duplicates(keep="last")
-    print(f"Spot (potential) duplicates dropped.")
+    # This is added to prevent mistakes...
+    # should be done more thoroughly
+    assert "perpetual" in df.columns, "Required column 'perpetual' missing from dataset."
+    if "spot" in df.columns:
+        if np.mean(df.spot) > 10.0:
+            logging.warning(f"Rescaling 'spot' time series.")
+            df.spot = df.spot / df.perpetual - 1.0
 
-    df = df.resample("1min").last()
-    print(f"Spot re-sampled at 1 minute interval.")
+    return df
 
-    # Fill this in...
-    OHLC = ["open", "high", "low", "close"]
-    index_ohlc = [f"index_{ohlc}" for ohlc in OHLC]
-    for col in index_ohlc:
+
+# ##################################
+# ANCILLARY METHODS: CLEANING
+# ##################################
+
+def back_and_forward_fill_ohlc_index_columns(df: pd.DataFrame):
+    """
+    Fill the DataFrame column forward, then backward.
+
+    :param df: pandas DataFrame
+    :return: pandas DataFrame (filled)
+    """
+
+    index_ohlc_cols = [f"index_{ohlc}" for ohlc in OHLC]
+    for col in index_ohlc_cols:
 
         if col not in df.columns:
             continue
 
-        print(f"Filling in column: {col}")
+        logging.info(f"Filling dataframe column {col} forward and back.")
         df[col] = df[col].ffill().bfill()
 
-    print("Dataset loaded.")
+    return df
 
-    col_mapping = {"perp_open": "open",
-                   "perp_high": "high",
-                   "perp_low": "low",
-                   "perp_close": "close",
-                   "quantity": "volume"}
 
-    # df.rename(columns=col_mapping, inplace=True)
+def clean_iv_columns(df: pd.DataFrame):
+    """
+    Cleans the DataFrame columns representing implied vol data by
+    replacing infinities by NaN, then filling it.
 
+    :param df: pandas DataFrame
+    :return: pandas DataFrame (filled)
+    """
     for c in df.columns:
-
         if "iv_" not in c:
             continue
-
         df[c] = df[c].replace(np.inf, np.nan, inplace=False)
         df[c] = df[c].ffill().bfill()
+    return df
 
-    # rescaled_cols = ["open", "high", "low"]
-    # for c in rescaled_cols:
-    #     df[c] = df[c] / df["close"] - 1.0
 
-    assert "perpetual" in df.columns
+# ##################################
+# ANCILLARY METHODS: PANDAS WRAPPER
+# ##################################
 
-    if "spot" in df.columns:
-        if np.mean(df.spot) > 10.0:
-            print(f"Rescaling 'spot' time series.")
-            df.spot = df.spot / df.perpetual - 1.0
+def load_raw_dataframe(max_rows: int, path: str):
+    """
+    Load a raw dataframe from a CSV file, basically a Pandas wrapper.
+
+    :param max_rows: maximum number of rows to be read, as int
+    :param path: path as string
+    :return: pandas DataFrame
+    """
+    # Load data using pandas
+    if max_rows is not None:
+        logging.debug(f"Loading dataset with a maximum of {max_rows}.")
+        df = pd.read_csv(path, nrows=max_rows)
+    else:
+        logging.debug(f"Loading dataset without a maximum row count.")
+        df = pd.read_csv(path)
+    logging.info(f"Dataset loaded with shape: {df.shape}.")
+    return df
+
+
+# ##################################
+# ANCILLARY METHODS: INDEX CLEANING
+# ##################################
+
+def reindex_dataframe(df: pd.DataFrame, resample: bool = True):
+    """
+    Re-index the dataframe
+
+    :param df: pandas dataframe
+    :param resample: Bool, too make sure the interval is OK.
+    :return:
+    """
+
+    logging.debug(f"Creating index.")
+    df["timestamp"] /= 1e9
+    idx = pd.DatetimeIndex([dt.datetime.utcfromtimestamp(d) for d in df["timestamp"].to_numpy()])
+
+    # Set index
+    df.set_index(idx, inplace=True)
+    df.drop(columns=["timestamp", ], inplace=True)
+
+    # Sort the index in place
+    df.sort_index(inplace=True)
+    logging.debug(f"Spot index sorted.")
+
+    # Avoid potential duplicates
+    df.index.drop_duplicates(keep="last")
+    logging.debug(f"Spot (potential) duplicates dropped.")
+
+    if resample:
+        df = df.resample("1min").last()
+        logging.info(f"Spot re-sampled at 1 minute interval.")
 
     return df
