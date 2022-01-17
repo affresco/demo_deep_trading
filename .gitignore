@@ -127,3 +127,15 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Datasets
+/data/
+/data/*
+
+/DQN/Lapan/runs/
+/DQN/Lapan/saves/
+/DQN/Lapan/wandb/
+
+/DQN/Lapan/runs/*
+/DQN/Lapan/saves/*
+/DQN/Lapan/wandb/*
